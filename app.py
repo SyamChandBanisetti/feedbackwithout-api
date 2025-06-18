@@ -1,58 +1,46 @@
-import os
-import io
+import streamlit as st
 import pandas as pd
 import plotly.express as px
-import streamlit as st
-from collections import Counter
 import spacy
+import io
+from collections import Counter
 from itertools import zip_longest
 
-# Load spaCy small English model
+# Load spaCy model (en_core_web_sm must be installed via setup.sh)
 nlp = spacy.load("en_core_web_sm")
 
-st.set_page_config(page_title="Feedback Analyzer", layout="wide")
-st.title("🧠 Offline Feedback Analyzer (No API Needed)")
+st.set_page_config(page_title="Feedback Analyzer (No API)", layout="wide")
+st.title("🧠 Feedback Analyzer (Offline, No API)")
 
+# Utility to split list into chunks of N
 def chunked(iterable, size):
     args = [iter(iterable)] * size
     return zip_longest(*args)
 
-def classify_sentiments(texts):
-    results = []
-    for text in texts:
-        text = text.strip()
-        if not text:
-            results.append(("NEUTRAL", "Empty response"))
-            continue
-
-        text_lower = text.lower()
-        if any(x in text_lower for x in ["good", "excellent", "nice", "love", "helpful"]):
-            results.append(("POSITIVE", "Contains positive words"))
-        elif any(x in text_lower for x in ["bad", "poor", "hate", "difficult", "worst"]):
-            results.append(("NEGATIVE", "Contains negative words"))
-        else:
-            results.append(("NEUTRAL", "No clear sentiment"))
-    return results
-
-def extract_keywords(texts):
+# Simple keyword extractor using spaCy noun chunks
+def extract_keywords(responses):
     all_keywords = []
-    for text in texts:
-        doc = nlp(text)
+    for response in responses:
+        doc = nlp(response)
         for chunk in doc.noun_chunks:
             all_keywords.append(chunk.text.lower())
-    return Counter(all_keywords).most_common(10)
+    return all_keywords
 
-def summarize_sentiments(question, percentages):
-    pos = percentages["Positive"]
-    neg = percentages["Negative"]
-    neu = percentages["Neutral"]
+# Basic sentiment keyword matching
+def classify_sentiment(text):
+    text = text.lower()
+    positive_words = ["good", "great", "excellent", "helpful", "clear", "amazing", "awesome", "nice", "love", "understood"]
+    negative_words = ["bad", "confusing", "poor", "difficult", "boring", "hate", "worst", "unclear", "not helpful"]
 
-    summary = f"The feedback for '{question}' includes {pos}% positive, {neg}% negative, and {neu}% neutral sentiments."
-    insights = "Majority seem satisfied." if pos > max(neg, neu) else (
-        "There is room for improvement." if neg > pos else "Mixed opinions observed.")
-    reco = "Continue current efforts." if pos > 60 else (
-        "Investigate complaints." if neg > 40 else "Seek more detailed feedback.")
-    return summary, insights, reco
+    pos_count = sum(1 for word in positive_words if word in text)
+    neg_count = sum(1 for word in negative_words if word in text)
+
+    if pos_count > neg_count:
+        return "POSITIVE", "Detected more positive words"
+    elif neg_count > pos_count:
+        return "NEGATIVE", "Detected more negative words"
+    else:
+        return "NEUTRAL", "No clear sentiment words found"
 
 uploaded_file = st.file_uploader("📂 Upload Feedback CSV", type=["csv"])
 
@@ -74,7 +62,8 @@ if uploaded_file:
             with cols[i]:
                 st.subheader(f"❓ {question}")
                 responses = df[question].dropna().astype(str).tolist()
-                sentiments = classify_sentiments(responses)
+
+                sentiments = [classify_sentiment(r) for r in responses]
                 labels = [label for label, _ in sentiments]
                 reasons = [reason for _, reason in sentiments]
 
@@ -95,26 +84,20 @@ if uploaded_file:
                     "Count": [pos, neg, neu]
                 })
 
-                st.plotly_chart(px.pie(pie_df, values="Count", names="Sentiment", hole=0.3,
-                                       color_discrete_sequence=px.colors.qualitative.Pastel), use_container_width=True)
+                pie = px.pie(pie_df, values="Count", names="Sentiment", hole=0.3,
+                             title=None, color_discrete_sequence=px.colors.qualitative.Pastel)
+                st.plotly_chart(pie, use_container_width=True)
 
-                st.plotly_chart(px.bar(pie_df, x="Sentiment", y="Count", text="Count",
-                                       color="Sentiment", color_discrete_sequence=px.colors.qualitative.Set2), use_container_width=True)
-
-                summary, insight, reco = summarize_sentiments(question, percentages)
-                st.markdown(f"📝 **Summary**: {summary}")
-                st.markdown(f"🔎 **Insights**: {insight}")
-                st.markdown(f"✅ **Recommendations**: {reco}")
+                bar = px.bar(pie_df, x="Sentiment", y="Count", text="Count",
+                             color="Sentiment", color_discrete_sequence=px.colors.qualitative.Set2)
+                st.plotly_chart(bar, use_container_width=True)
 
                 summary_data.append({
                     "Question": question,
                     "Total": total,
                     "Positive %": percentages["Positive"],
                     "Negative %": percentages["Negative"],
-                    "Neutral %": percentages["Neutral"],
-                    "Summary": summary,
-                    "Insights": insight,
-                    "Recommendations": reco
+                    "Neutral %": percentages["Neutral"]
                 })
 
                 for r, l, rsn in zip(responses, labels, reasons):
@@ -125,20 +108,22 @@ if uploaded_file:
                         "Reason": rsn
                     })
 
-                with st.expander("📋 View Sample Responses"):
+                with st.expander("📋 Sample Responses"):
                     st.dataframe(pd.DataFrame({
                         "Response": responses,
                         "Sentiment": labels,
                         "Reason": reasons
                     }).head(10), use_container_width=True)
 
-    # Keywords section
-    st.markdown("## 🔑 Top Keywords from All Responses")
-    all_texts = df[questions].astype(str).values.flatten().tolist()
-    keywords = extract_keywords(all_texts)
-    st.dataframe(pd.DataFrame(keywords, columns=["Keyword", "Frequency"]))
+    # Keyword Extraction Summary
+    st.markdown("## 🗝️ Common Keywords from All Responses")
+    all_responses = df[questions].astype(str).fillna("").values.flatten().tolist()
+    keywords = extract_keywords(all_responses)
+    keyword_counts = Counter(keywords)
+    keyword_df = pd.DataFrame(keyword_counts.items(), columns=["Keyword", "Count"]).sort_values(by="Count", ascending=False)
+    st.dataframe(keyword_df.head(20), use_container_width=True)
 
-    # Final download section
+    # Download section
     st.markdown("## 📥 Download Complete Report")
     summary_df = pd.DataFrame(summary_data)
     response_df = pd.DataFrame(response_data)
@@ -146,6 +131,7 @@ if uploaded_file:
     with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
         summary_df.to_excel(writer, sheet_name="Summary", index=False)
         response_df.to_excel(writer, sheet_name="Responses", index=False)
+        keyword_df.to_excel(writer, sheet_name="Keywords", index=False)
     output.seek(0)
     st.download_button("📥 Download Excel Report", data=output,
                        file_name="feedback_report.xlsx",
