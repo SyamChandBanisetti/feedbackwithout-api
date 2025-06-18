@@ -2,5 +2,6 @@ streamlit
 pandas
 plotly
 textblob
+nltk
+openpyxl
 xlsxwriter
-wordcloud
