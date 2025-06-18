@@ -1,21 +1,27 @@
+import os
 import io
 import pandas as pd
 import plotly.express as px
 import streamlit as st
 from collections import Counter
-from textblob import TextBlob
 from itertools import zip_longest
-from wordcloud import STOPWORDS
+from textblob import TextBlob
+import nltk
 
-st.set_page_config(page_title="📋 Advanced Feedback Analyzer", layout="wide")
-st.title("🧠 Advanced Offline Feedback Analyzer")
-st.markdown("Analyze textual feedback with **sentiment, keyword, and response pattern insights** — no internet or API required.")
+# Download necessary corpora (runs only once)
+nltk.download('punkt')
+nltk.download('averaged_perceptron_tagger')
 
-# Utility functions
+# Streamlit UI setup
+st.set_page_config(page_title="Offline Feedback Analyzer", layout="wide")
+st.title("🧠 Offline Feedback Analyzer (No API Required)")
+
+# Helper: Chunking for layout
 def chunked(iterable, size):
     args = [iter(iterable)] * size
     return zip_longest(*args)
 
+# Sentiment classifier using TextBlob
 def classify_sentiments(texts):
     results = []
     for text in texts:
@@ -25,71 +31,70 @@ def classify_sentiments(texts):
             continue
         blob = TextBlob(text)
         polarity = blob.sentiment.polarity
-        if polarity > 0.2:
+        if polarity > 0.1:
             label = "POSITIVE"
-            reason = "Clearly positive tone"
-        elif polarity < -0.2:
+        elif polarity < -0.1:
             label = "NEGATIVE"
-            reason = "Clearly negative tone"
         else:
             label = "NEUTRAL"
-            reason = "Mixed or unclear tone"
+        reason = f"Polarity={polarity:.2f}"
         results.append((label, reason))
     return results
 
-def summarize_sentiments(question, percentages):
-    pos, neg, neu = percentages["Positive"], percentages["Negative"], percentages["Neutral"]
-    summary = f"Among all feedback for **'{question}'**, {pos}% were positive, {neg}% negative, and {neu}% neutral."
-    if pos >= 60:
-        insight = "This aspect is highly appreciated by users."
-        reco = "Continue reinforcing this strength and promote it more."
-    elif neg >= 40:
-        insight = "There is significant dissatisfaction."
-        reco = "Investigate root causes and take corrective actions."
-    elif neu >= 50:
-        insight = "Many responses are ambiguous or neutral."
-        reco = "Consider rewording the question for clearer answers."
-    else:
-        insight = "Feedback shows a mixed sentiment distribution."
-        reco = "Further qualitative analysis might be beneficial."
-    return summary, insight, reco
-
-def extract_keywords(texts, stopwords=set(STOPWORDS)):
-    phrases = []
+# Extract top keywords
+def extract_keywords(texts, top_n=5):
+    all_keywords = []
     for text in texts:
         blob = TextBlob(text)
-        for phrase in blob.noun_phrases:
-            if phrase.lower() not in stopwords:
-                phrases.append(phrase.lower())
-    return Counter(phrases).most_common(10)
+        all_keywords.extend(blob.noun_phrases)
+    keywords_freq = Counter(all_keywords)
+    return keywords_freq.most_common(top_n)
 
-def get_response_lengths(texts):
-    lengths = [len(text.split()) for text in texts]
-    return {
-        "Average": round(sum(lengths)/len(lengths), 1),
-        "Min": min(lengths),
-        "Max": max(lengths)
-    }
+# Summarize based on sentiment distribution
+def summarize_sentiments(percentages):
+    pos = percentages["Positive"]
+    neg = percentages["Negative"]
+    neu = percentages["Neutral"]
 
-# File uploader
-uploaded_file = st.file_uploader("📂 Upload your feedback CSV file", type=["csv"])
+    if pos > 60:
+        summary = "Majority feedback is positive."
+        insight = "Students appreciated the content or teaching."
+        reco = "Continue current efforts; consider gathering more specific praise."
+    elif neg > 40:
+        summary = "Significant negative sentiment."
+        insight = "There may be dissatisfaction in delivery, pace, or content."
+        reco = "Review complaints or open text feedback to identify key concerns."
+    elif neu > 50:
+        summary = "Feedback is mostly neutral."
+        insight = "Students may not be highly engaged or responses are vague."
+        reco = "Encourage more detailed and expressive feedback."
+    else:
+        summary = "Mixed feedback."
+        insight = "Varied experiences among students."
+        reco = "Investigate both positive and negative patterns for deeper insight."
+
+    return summary, insight, reco
+
+# File upload
+uploaded_file = st.file_uploader("📂 Upload Feedback CSV", type=["csv"])
 
 if uploaded_file:
     df = pd.read_csv(uploaded_file)
     text_cols = df.select_dtypes(include="object").columns.tolist()
-    ignore_cols = ["timestamp", "email", "name", "id"]
-    questions = [col for col in text_cols if col.lower() not in ignore_cols]
+    ignore = ["timestamp", "email", "name", "id"]
+    questions = [col for col in text_cols if col.lower() not in ignore]
 
-    st.markdown("### 📊 Question-wise Feedback Analysis")
-    summary_data, response_data = [], []
+    st.markdown("### 📊 Question-wise Analysis")
+    summary_data = []
+    response_data = []
 
-    for group in chunked(questions, 2):
-        cols = st.columns(2)
+    for group in chunked(questions, 3):
+        cols = st.columns(3)
         for i, question in enumerate(group):
-            if not question: continue
+            if question is None:
+                continue
             with cols[i]:
                 st.subheader(f"❓ {question}")
-
                 responses = df[question].dropna().astype(str).tolist()
                 sentiments = classify_sentiments(responses)
                 labels = [label for label, _ in sentiments]
@@ -107,60 +112,35 @@ if uploaded_file:
                     "Neutral": round((neu / total) * 100, 1)
                 }
 
-                # Horizontal ratio bar
-                ratio_chart = px.bar(pd.DataFrame({
-                    "Sentiment": ["Positive", "Negative", "Neutral"],
-                    "Value": [pos, neg, neu]
-                }), x="Value", y=["Sentiment"], orientation="h",
-                   color="Sentiment", text="Value",
-                   color_discrete_map={"Positive": "#66c2a5", "Negative": "#fc8d62", "Neutral": "#8da0cb"})
-                st.plotly_chart(ratio_chart, use_container_width=True)
-
-                # Pie chart
                 pie_df = pd.DataFrame({
                     "Sentiment": ["Positive", "Negative", "Neutral"],
                     "Count": [pos, neg, neu]
                 })
-                pie = px.pie(pie_df, values="Count", names="Sentiment", hole=0.4)
+
+                pie = px.pie(pie_df, values="Count", names="Sentiment", hole=0.3,
+                             color_discrete_sequence=px.colors.qualitative.Pastel)
                 st.plotly_chart(pie, use_container_width=True)
 
-                # Summary, insights, and recommendations
-                summary, insight, reco = summarize_sentiments(question, percentages)
-                st.success(f"📝 **Summary**: {summary}")
-                st.info(f"🔍 **Insights**: {insight}")
-                st.warning(f"✅ **Recommendations**: {reco}")
+                bar = px.bar(pie_df, x="Sentiment", y="Count", text="Count",
+                             color="Sentiment", color_discrete_sequence=px.colors.qualitative.Set2)
+                st.plotly_chart(bar, use_container_width=True)
 
-                # Additional metrics
-                with st.expander("📐 Response Length Stats & Keywords"):
-                    lengths = get_response_lengths(responses)
-                    keywords = extract_keywords(responses)
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        st.metric("Avg Words", lengths["Average"])
-                        st.metric("Min Words", lengths["Min"])
-                        st.metric("Max Words", lengths["Max"])
-                    with col2:
-                        st.markdown("**Top Keywords**:")
-                        for kw, freq in keywords:
-                            st.markdown(f"• {kw} ({freq}x)")
+                keywords = extract_keywords(responses)
+                keywords_list = ", ".join([kw for kw, _ in keywords])
+                summary, insight, reco = summarize_sentiments(percentages)
 
-                # Response samples
-                with st.expander("📋 Sample Responses (first 10)"):
-                    emoji = {"POSITIVE": "🟢", "NEGATIVE": "🔴", "NEUTRAL": "⚪"}
-                    st.dataframe(pd.DataFrame({
-                        "Sentiment": [f"{emoji[l]} {l}" for l in labels[:10]],
-                        "Response": responses[:10],
-                        "Reason": reasons[:10]
-                    }), use_container_width=True)
+                st.markdown(f"🔑 **Top Keywords**: {keywords_list}")
+                st.markdown(f"📝 **Summary**: {summary}")
+                st.markdown(f"🔎 **Insights**: {insight}")
+                st.markdown(f"✅ **Recommendations**: {reco}")
 
                 summary_data.append({
                     "Question": question,
-                    "Total Responses": total,
+                    "Total": total,
                     "Positive %": percentages["Positive"],
                     "Negative %": percentages["Negative"],
                     "Neutral %": percentages["Neutral"],
-                    "Avg Words": lengths["Average"],
-                    "Top Keywords": ", ".join([kw for kw, _ in keywords]),
+                    "Top Keywords": keywords_list,
                     "Summary": summary,
                     "Insights": insight,
                     "Recommendations": reco
@@ -174,9 +154,15 @@ if uploaded_file:
                         "Reason": rsn
                     })
 
-    # Download Excel report
-    st.markdown("---")
-    st.markdown("### 📥 Download Full Report")
+                with st.expander("📋 View Sample Responses"):
+                    st.dataframe(pd.DataFrame({
+                        "Response": responses,
+                        "Sentiment": labels,
+                        "Reason": reasons
+                    }).head(10), use_container_width=True)
+
+    # Final download section
+    st.markdown("## 📥 Download Complete Report")
     summary_df = pd.DataFrame(summary_data)
     response_df = pd.DataFrame(response_data)
     output = io.BytesIO()
@@ -184,8 +170,8 @@ if uploaded_file:
         summary_df.to_excel(writer, sheet_name="Summary", index=False)
         response_df.to_excel(writer, sheet_name="Responses", index=False)
     output.seek(0)
-    st.download_button("📤 Download Excel Report", data=output,
-                       file_name="enhanced_feedback_report.xlsx",
+    st.download_button("📥 Download Excel Report", data=output,
+                       file_name="offline_feedback_report.xlsx",
                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 else:
-    st.info("👆 Upload a CSV file with open-ended textual feedback to begin.")
+    st.info("Please upload a CSV file to analyze.")
