@@ -1,53 +1,46 @@
-import streamlit as st
+import os
+import io
 import pandas as pd
 import plotly.express as px
-import spacy
-import io
-import subprocess
+import streamlit as st
 from collections import Counter
+from rake_nltk import Rake
 from itertools import zip_longest
 
-# ✅ Auto-download model if missing
-try:
-    nlp = spacy.load("en_core_web_sm")
-except:
-    st.warning("Downloading spaCy model 'en_core_web_sm' (first run only)...")
-    subprocess.run(["python", "-m", "spacy", "download", "en_core_web_sm"])
-    nlp = spacy.load("en_core_web_sm")
+st.set_page_config(page_title="Feedback Analyzer", layout="wide")
+st.title("🧠 Offline Feedback Analyzer (No API Required)")
 
-
-st.set_page_config(page_title="Feedback Analyzer (No API)", layout="wide")
-st.title("🧠 Feedback Analyzer (Offline, No API)")
-
-# Utility to split list into chunks of N
 def chunked(iterable, size):
     args = [iter(iterable)] * size
     return zip_longest(*args)
 
-# Simple keyword extractor using spaCy noun chunks
+@st.cache_resource
+def get_rake():
+    return Rake()
+
+def classify_sentiments(texts):
+    results = []
+    for text in texts:
+        text = text.strip().lower()
+        if not text:
+            results.append(("NEUTRAL", "Empty response"))
+            continue
+        # Simple rule-based sentiment
+        if any(w in text for w in ["good", "great", "excellent", "loved", "amazing", "fantastic"]):
+            results.append(("POSITIVE", "Positive keywords found"))
+        elif any(w in text for w in ["bad", "poor", "terrible", "worst", "boring", "hate"]):
+            results.append(("NEGATIVE", "Negative keywords found"))
+        else:
+            results.append(("NEUTRAL", "No strong sentiment keywords"))
+    return results
+
 def extract_keywords(responses):
+    r = get_rake()
     all_keywords = []
     for response in responses:
-        doc = nlp(response)
-        for chunk in doc.noun_chunks:
-            all_keywords.append(chunk.text.lower())
+        r.extract_keywords_from_text(response)
+        all_keywords.extend(r.get_ranked_phrases()[:2])  # top 2 per response
     return all_keywords
-
-# Basic sentiment keyword matching
-def classify_sentiment(text):
-    text = text.lower()
-    positive_words = ["good", "great", "excellent", "helpful", "clear", "amazing", "awesome", "nice", "love", "understood"]
-    negative_words = ["bad", "confusing", "poor", "difficult", "boring", "hate", "worst", "unclear", "not helpful"]
-
-    pos_count = sum(1 for word in positive_words if word in text)
-    neg_count = sum(1 for word in negative_words if word in text)
-
-    if pos_count > neg_count:
-        return "POSITIVE", "Detected more positive words"
-    elif neg_count > pos_count:
-        return "NEGATIVE", "Detected more negative words"
-    else:
-        return "NEUTRAL", "No clear sentiment words found"
 
 uploaded_file = st.file_uploader("📂 Upload Feedback CSV", type=["csv"])
 
@@ -69,8 +62,7 @@ if uploaded_file:
             with cols[i]:
                 st.subheader(f"❓ {question}")
                 responses = df[question].dropna().astype(str).tolist()
-
-                sentiments = [classify_sentiment(r) for r in responses]
+                sentiments = classify_sentiments(responses)
                 labels = [label for label, _ in sentiments]
                 reasons = [reason for _, reason in sentiments]
 
@@ -99,12 +91,13 @@ if uploaded_file:
                              color="Sentiment", color_discrete_sequence=px.colors.qualitative.Set2)
                 st.plotly_chart(bar, use_container_width=True)
 
+                st.markdown(f"📝 **Summary**: {percentages}")
                 summary_data.append({
                     "Question": question,
                     "Total": total,
                     "Positive %": percentages["Positive"],
                     "Negative %": percentages["Negative"],
-                    "Neutral %": percentages["Neutral"]
+                    "Neutral %": percentages["Neutral"],
                 })
 
                 for r, l, rsn in zip(responses, labels, reasons):
@@ -115,22 +108,25 @@ if uploaded_file:
                         "Reason": rsn
                     })
 
-                with st.expander("📋 Sample Responses"):
+                with st.expander("📋 View Sample Responses"):
                     st.dataframe(pd.DataFrame({
                         "Response": responses,
                         "Sentiment": labels,
                         "Reason": reasons
                     }).head(10), use_container_width=True)
 
-    # Keyword Extraction Summary
-    st.markdown("## 🗝️ Common Keywords from All Responses")
-    all_responses = df[questions].astype(str).fillna("").values.flatten().tolist()
-    keywords = extract_keywords(all_responses)
-    keyword_counts = Counter(keywords)
-    keyword_df = pd.DataFrame(keyword_counts.items(), columns=["Keyword", "Count"]).sort_values(by="Count", ascending=False)
-    st.dataframe(keyword_df.head(20), use_container_width=True)
+    # Global Keyword Analysis
+    st.markdown("### 🔑 Keyword Analysis (All Responses Combined)")
+    all_text = df[questions].astype(str).fillna("").values.flatten().tolist()
+    keywords = extract_keywords(all_text)
+    if keywords:
+        keyword_counts = Counter(keywords).most_common(20)
+        keyword_df = pd.DataFrame(keyword_counts, columns=["Keyword", "Frequency"])
+        fig = px.bar(keyword_df, x="Keyword", y="Frequency", title="Top Keywords", color="Frequency",
+                     color_continuous_scale="Blues")
+        st.plotly_chart(fig, use_container_width=True)
 
-    # Download section
+    # Final Report Download
     st.markdown("## 📥 Download Complete Report")
     summary_df = pd.DataFrame(summary_data)
     response_df = pd.DataFrame(response_data)
@@ -138,7 +134,6 @@ if uploaded_file:
     with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
         summary_df.to_excel(writer, sheet_name="Summary", index=False)
         response_df.to_excel(writer, sheet_name="Responses", index=False)
-        keyword_df.to_excel(writer, sheet_name="Keywords", index=False)
     output.seek(0)
     st.download_button("📥 Download Excel Report", data=output,
                        file_name="feedback_report.xlsx",
