@@ -3,11 +3,18 @@ import pandas as pd
 import plotly.express as px
 import spacy
 import io
+import subprocess
 from collections import Counter
 from itertools import zip_longest
 
-# Load spaCy model (en_core_web_sm must be installed via setup.sh)
-nlp = spacy.load("en_core_web_sm")
+# ✅ Auto-download model if missing
+try:
+    nlp = spacy.load("en_core_web_sm")
+except:
+    st.warning("Downloading spaCy model 'en_core_web_sm' (first run only)...")
+    subprocess.run(["python", "-m", "spacy", "download", "en_core_web_sm"])
+    nlp = spacy.load("en_core_web_sm")
+
 
 st.set_page_config(page_title="Feedback Analyzer (No API)", layout="wide")
 st.title("🧠 Feedback Analyzer (Offline, No API)")
