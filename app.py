@@ -6,11 +6,15 @@ import streamlit as st
 from collections import Counter
 from itertools import zip_longest
 from textblob import TextBlob
+from textblob import TextBlob
 import nltk
 
-# Download necessary corpora (runs only once)
+# Download required corpora
 nltk.download('punkt')
 nltk.download('averaged_perceptron_tagger')
+nltk.download('brown')
+nltk.download('conll2000')
+
 
 # Streamlit UI setup
 st.set_page_config(page_title="Offline Feedback Analyzer", layout="wide")
