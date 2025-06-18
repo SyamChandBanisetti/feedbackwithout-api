@@ -1,6 +1,6 @@
 streamlit
 pandas
 plotly
-rake-nltk
+scikit-learn
 openpyxl
 xlsxwriter
